@@ -1,1 +1,5 @@
 carw_env/
+data/
+output/
+PaddleSeg/
+__pycache__

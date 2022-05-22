@@ -7,40 +7,46 @@ import cv2
 import numpy as numpy
 import pandas as pd
 
-# we assume the file is a tar.gz compressed object
-FILE_PTTN = re.compile('[^/]+\.tar\.gz')
-
-def setup_wdir(cfg_url: str) -> None:
+def setup_wdir(pars_url: str) -> None:
     """Project env / working directory setup
     
     Args:
-        cfg_url (str): URL to a valid PaddleSeg configuration tar.gz file.
-
+        pars_url (str): URL to a valid PaddleSeg model parameter config (.pdparams).
+    
     Returns:
         None
     
     """
-    # determine name of config file
-    fname = re.findall(pattern=FILE_PTTN, string=cfg_url)[0]
     # git clone if paddleseg not available
     if not os.path.exists('PaddleSeg/'):
         print('Cloning PaddleSeg project...')
         os.system('git clone https://github.com/PaddlePaddle/PaddleSeg')
-    # download and extract model config if not available
-    if not os.path.exists(f'PaddleSeg/{fname.replace(".tar.gz", "")}/'):
-        print('Downloading model config...')
-        os.system(f'cd PaddleSeg && wget {cfg_url} && tar -zxvf {fname} && rm {fname}')
-    print('Env successfully set up')
+    # download and export model if not available
+    if not os.path.exists('PaddleSeg/carw_config'):
+        print('Downloading and exporting model...')
+        # extract configuration YAML and base dir
+        cfg_yml = pars_url.split('/')[-2]
+        cfg_dir = cfg_yml.split('_')[0]
+        os.system(f'cd PaddleSeg && mkdir {cfg_dir} && cd {cfg_dir} && wget {pars_url}')
+        # export model
+        cmd = f'''
+            python3 PaddleSeg/export.py \
+                --config PaddleSeg/configs/{cfg_dir}/{cfg_yml}.yml \
+                --model_path PaddleSeg/{cfg_dir}/model.pdparams \
+                --save_dir PaddleSeg/carw_config \
+                --input_shape 1 3 1024 1024
+            '''
+        os.system(cmd)
+    print('Environment successfully set up!')
 
     return None
 
-def run_inference(img_path: str, cfg_dir: str) -> None:
+def run_inference(img_path: str) -> None:
     """Run image through inference with a specified PaddleSeg configuration,
     write resulting segmented image into a results/ directory
     
     Args:
         img_path (str): Path to target image (JPG or PNG).
-        cfg_dir (str): Directory name of PaddleSeg configuration.
 
     Returns:
         None
@@ -48,7 +54,7 @@ def run_inference(img_path: str, cfg_dir: str) -> None:
     """
     cmd = f'''
           python3 PaddleSeg/deploy/python/infer.py \
-              --config PaddleSeg/{cfg_dir}/deploy.yaml \
+              --config PaddleSeg/carw_config/deploy.yaml \
               --image_path {img_path} \
               --save_dir output/
           '''
@@ -77,15 +83,15 @@ def segment_car(img_path: str, mask_path: str) -> numpy.ndarray:
     
     return out
 
-def get_car(fpath: str, cdir: str) -> numpy.ndarray:
-    """End-to-end process to run PaddleSeg inference and extract car component(s)
+def score_dirt(fpath: str, cdir: str) -> numpy.ndarray:
+    """End-to-end process to run PaddleSeg inference and score dirt level
     
     Args:
         fpath (str): Path to target image (JPG or PNG).
         cdir (str): Directory name of PaddleSeg configuration.
     
     Returns:
-        numpy.ndarray: Zeroed RGB image carrying the car component(s)
+        float: Dirt score for tested car (0-1 range).
     
     """
     # get path to mask object
@@ -93,6 +99,13 @@ def get_car(fpath: str, cdir: str) -> numpy.ndarray:
     # inference
     run_inference(img_path=fpath, cfg_dir=cdir)
     # segment 
-    out = segment_car(img_path=fpath, mask_path=fpath_mask)
+    seg_car = segment_car(img_path=fpath, mask_path=fpath_mask)
+    # Canny edge detection (binarized)
+    edges = cv2.Canny(image=seg_car, threshold1=100, threshold2=200) / 255
+    # init kernel, apply morph closing (2x)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    closing = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # compute score
+    score = np.mean(closing[seg_car[..., 0] != 0])
 
-    return out
+    return score

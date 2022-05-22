@@ -3,3 +3,4 @@ data/
 output/
 PaddleSeg/
 __pycache__
+.DS_Store
